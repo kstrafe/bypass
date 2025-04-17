@@ -1,0 +1,13 @@
+[package]
+name = "bypass"
+version = "0.1.0"
+edition = "2024"
+authors = ["Kevin Robert Stravers <kevin@stravers.net>"]
+description = "Thread-local dynamic variables"
+homepage = "https://github.com/kstrafe/mutcy"
+repository = "https://github.com/kstrafe/mutcy"
+keywords = ["thread-local", "dynamic", "variable"]
+license = "MIT"
+
+[dependencies]
+scoped-tls = "1.0"
