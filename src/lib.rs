@@ -92,26 +92,51 @@ scoped_thread_local! {
 
 type LoggerFn = Box<dyn Fn(Log)>;
 
-thread_local! {
-    static LOGGER: RefCell<LoggerFn> = RefCell::new({
-        let nesting = Cell::new(0);
-        Box::new(move |log| {
-            match log {
-                Log::Scope { location, begin } => {
-                    if begin {
-                        eprintln!("{:>width$}{} [bypass] => enter scope depth={}", "", location, nesting.get(), width = nesting.get() * 2);
-                        nesting.set(nesting.get() + 1);
-                    } else {
-                        nesting.set(nesting.get() - 1);
-                        eprintln!("{:>width$}{} [bypass] <= exit scope depth={}", "", location, nesting.get(), width = nesting.get() * 2);
-                    }
-
-                }
-                Log::Operation { location, operation, key, r#type } => {
-                    eprintln!("{:>width$}{} [bypass] {}: key={:?} type={:?}", "", location, operation, key, r#type, width = nesting.get() * 2);
-                }
+fn default_logger() -> Box<dyn Fn(Log)> {
+    let nesting = Cell::new(0);
+    Box::new(move |log| match log {
+        Log::Scope { location, begin } => {
+            if begin {
+                eprintln!(
+                    "{:>width$}[bypass] => enter scope depth={} ({})",
+                    "",
+                    nesting.get(),
+                    location,
+                    width = nesting.get() * 2
+                );
+                nesting.set(nesting.get() + 1);
+            } else {
+                nesting.set(nesting.get() - 1);
+                eprintln!(
+                    "{:>width$}[bypass] <= exit scope depth={} ({})",
+                    "",
+                    nesting.get(),
+                    location,
+                    width = nesting.get() * 2
+                );
             }
-        })})
+        }
+        Log::Operation {
+            location,
+            operation,
+            key,
+            r#type,
+        } => {
+            eprintln!(
+                "{:>width$}[bypass] {}: key={:?} type={:?} ({})",
+                "",
+                operation,
+                key,
+                r#type,
+                location,
+                width = nesting.get() * 2
+            );
+        }
+    })
+}
+
+thread_local! {
+    static LOGGER: RefCell<LoggerFn> = RefCell::new(default_logger());
 }
 
 /// Used in logging to denote the type of operation that is going to be
@@ -267,24 +292,24 @@ where
 ///
 /// bypass::set_logger({
 ///     let nesting = Cell::new(0);
-///     move |log| match log {
+///     Box::new(move |log: Log<'_>| match log {
 ///         Log::Scope { location, begin } => {
 ///             if begin {
 ///                 eprintln!(
-///                     "{:>width$}{} [bypass] => enter scope depth={}",
+///                     "{:>width$}[bypass] => enter scope depth={} ({})",
 ///                     "",
-///                     location,
 ///                     nesting.get(),
+///                     location,
 ///                     width = nesting.get() * 2
 ///                 );
 ///                 nesting.set(nesting.get() + 1);
 ///             } else {
 ///                 nesting.set(nesting.get() - 1);
 ///                 eprintln!(
-///                     "{:>width$}{} [bypass] <= exit scope depth={}",
+///                     "{:>width$}[bypass] <= exit scope depth={} ({})",
 ///                     "",
-///                     location,
 ///                     nesting.get(),
+///                     location,
 ///                     width = nesting.get() * 2
 ///                 );
 ///             }
@@ -296,16 +321,16 @@ where
 ///             r#type,
 ///         } => {
 ///             eprintln!(
-///                 "{:>width$}{} [bypass] {}: key={:?} type={:?}",
+///                 "{:>width$}[bypass] {}: key={:?} type={:?} ({})",
 ///                 "",
-///                 location,
 ///                 operation,
 ///                 key,
 ///                 r#type,
+///                 location,
 ///                 width = nesting.get() * 2
 ///             );
 ///         }
-///     }
+///     })
 /// });
 /// ```
 pub fn set_logger<F: Fn(Log) + 'static>(logger: F) {

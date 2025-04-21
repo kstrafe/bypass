@@ -1,5 +1,5 @@
 use bypass::{Log, get, insert, remove, scope, set_logger};
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, panic, rc::Rc};
 
 #[test]
 fn logger_invocation() {
@@ -156,4 +156,38 @@ fn drop_order() {
 
     assert!(order.borrow().len() == 4);
     assert!(order.borrow().is_sorted());
+}
+
+#[test]
+fn logger_invoked_during_panic() {
+    let capture = Rc::new(RefCell::new(String::new()));
+    let capture_clone = capture.clone();
+
+    set_logger(move |log| {
+        let mut string = capture_clone.borrow_mut();
+        match log {
+            Log::Scope { begin, .. } => {
+                *string += if begin { "begin" } else { "end" };
+            }
+            Log::Operation { operation, .. } => {
+                *string += &format!("-{}-", operation);
+            }
+        }
+    });
+
+    let result = panic::catch_unwind(|| {
+        scope(|| {
+            let _: u32 = remove("");
+        });
+    });
+
+    let Err(error) = result else {
+        panic!("Expected panic");
+    };
+
+    assert_eq!(
+        *error.downcast::<String>().unwrap(),
+        "bypass: key not present: \"\""
+    );
+    assert_eq!(*capture.borrow(), "begin-remove-end");
 }
