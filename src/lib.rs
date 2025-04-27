@@ -58,7 +58,7 @@
 //! Keys can be either `&'static str` or a `String`. When strings are
 //! constructed (e.g. via `format!`), it may be hard to figure out where a key
 //! is inserted in a codebase. To debug this library you can set a logger via
-//! [set_logger]. This logger is local to the current thread.
+//! [debug]. This logger is local to the current thread.
 //!
 //! If no logger is set then the default logger will be used that prints all
 //! operations to stderr. The default logger prints the code location from where
@@ -290,7 +290,7 @@ where
 /// use bypass::Log;
 /// use std::cell::Cell;
 ///
-/// bypass::set_logger({
+/// bypass::debug({
 ///     let nesting = Cell::new(0);
 ///     Box::new(move |log: Log<'_>| match log {
 ///         Log::Scope { location, begin } => {
@@ -333,7 +333,7 @@ where
 ///     })
 /// });
 /// ```
-pub fn set_logger<F: Fn(Log) + 'static>(logger: F) {
+pub fn debug<F: Fn(Log) + 'static>(logger: F) {
     LOGGER.with_borrow_mut(|x| *x = Box::new(logger));
 }
 

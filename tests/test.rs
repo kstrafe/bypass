@@ -1,4 +1,4 @@
-use bypass::{Log, get, insert, remove, scope, set_logger};
+use bypass::{Log, debug, get, insert, remove, scope};
 use std::{cell::RefCell, panic, rc::Rc};
 
 #[test]
@@ -6,7 +6,7 @@ fn logger_invocation() {
     let capture = Rc::new(RefCell::new(String::new()));
     let capture_clone = capture.clone();
 
-    set_logger(move |log| {
+    debug(move |log| {
         let mut string = capture_clone.borrow_mut();
         match log {
             Log::Scope { location, begin } => {
@@ -163,7 +163,7 @@ fn logger_invoked_during_panic() {
     let capture = Rc::new(RefCell::new(String::new()));
     let capture_clone = capture.clone();
 
-    set_logger(move |log| {
+    debug(move |log| {
         let mut string = capture_clone.borrow_mut();
         match log {
             Log::Scope { begin, .. } => {
