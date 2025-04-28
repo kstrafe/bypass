@@ -1,4 +1,4 @@
-use bypass::{Log, debug, get, insert, remove, scope};
+use bypass::{Log, Scope, debug, get, insert, lift, name, remove, scope};
 use std::{cell::RefCell, panic, rc::Rc};
 
 #[test]
@@ -31,12 +31,12 @@ fn logger_invocation() {
             let _: i32 = remove("a");
         });
         insert("b", "lorem ipsum");
-        insert("a", 789);
+        insert("c", 789);
     });
 
     assert_eq!(
         *capture.borrow(),
-        "scope(tests/test.rs:26:5true)oper(tests/test.rs:27:9insert\"a\"\"i32\")scope(tests/test.rs:28:9true)oper(tests/test.rs:29:13insert\"a\"\"i32\")oper(tests/test.rs:30:26get\"a\"\"i32\")oper(tests/test.rs:31:26remove\"a\"\"i32\")scope(tests/test.rs:28:9false)oper(tests/test.rs:33:9insert\"b\"\"&str\")oper(tests/test.rs:34:9insert\"a\"\"i32\")scope(tests/test.rs:26:5false)"
+        "scope(tests/test.rs:26:5true)oper(tests/test.rs:27:9insert\"a\"\"i32\")scope(tests/test.rs:28:9true)oper(tests/test.rs:29:13insert\"a\"\"i32\")oper(tests/test.rs:30:26get\"a\"\"i32\")oper(tests/test.rs:31:26remove\"a\"\"i32\")scope(tests/test.rs:28:9false)oper(tests/test.rs:33:9insert\"b\"\"&str\")oper(tests/test.rs:34:9insert\"c\"\"i32\")scope(tests/test.rs:26:5false)"
     );
 }
 
@@ -63,7 +63,7 @@ fn no_scope_remove() {
 fn get_nonexistent() {
     scope(|| {
         let _: () = get("");
-    })
+    });
 }
 
 #[test]
@@ -71,7 +71,7 @@ fn get_nonexistent() {
 fn remove_nonexistent() {
     scope(|| {
         let _: () = remove("");
-    })
+    });
 }
 
 #[test]
@@ -80,7 +80,7 @@ fn get_type_mismatch() {
     scope(|| {
         insert("", 0i32);
         let _: u32 = get("");
-    })
+    });
 }
 
 #[test]
@@ -89,7 +89,7 @@ fn remove_type_mismatch() {
     scope(|| {
         insert("", 0i32);
         let _: u32 = remove("");
-    })
+    });
 }
 
 #[test]
@@ -190,4 +190,61 @@ fn logger_invoked_during_panic() {
         "bypass: key not present: \"\""
     );
     assert_eq!(*capture.borrow(), "begin-remove-end");
+}
+
+#[test]
+fn scope_lift() {
+    scope(|| {
+        scope(|| {
+            lift("x");
+            insert("x", 123);
+        });
+
+        let value: i32 = get("x");
+        assert_eq!(value, 123);
+    });
+}
+
+#[test]
+fn scope_lift_middle() {
+    scope(|| {
+        scope(|| {
+            lift("scarecrow:intermediate").to("x");
+            insert("x", "ignore");
+
+            let value: &str = get("x");
+            assert_eq!(value, "ignore");
+
+            scope(|| {
+                lift("x").to("scarecrow:intermediate");
+                insert("x", 123);
+            });
+        });
+
+        let value: i32 = get("x");
+        assert_eq!(value, 123);
+    });
+}
+
+#[test]
+fn middleware_circumnavigation() {
+    scope(|| {
+        name("top-level");
+        insert("input", "top-level string");
+
+        scope(|| {
+            lift("top-level");
+            scope(|| {
+                lift("top-level");
+                let sc: Scope = get("top-level");
+                sc.insert("x", 123);
+
+                let string: &str = sc.get("input");
+                assert_eq!(string, "top-level string");
+            });
+        });
+
+        let value: i32 = get("x");
+        assert_eq!(value, 123);
+    });
 }
