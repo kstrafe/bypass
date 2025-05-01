@@ -570,9 +570,9 @@ impl Scope {
 
         let from = from.into();
 
-        self.inner.with_borrow_mut(|x| {
+        self.inner.with_borrow(|x| {
             x.scopes
-                .last_mut()
+                .last()
                 .expect(NO_SCOPE)
                 .lift(from.clone(), location);
             Lift::new(self.inner, from)
@@ -600,7 +600,7 @@ impl Scope {
 
         let location = panic::Location::caller();
 
-        self.inner.with_borrow_mut(|x| {
+        self.inner.with_borrow(|x| {
             let items = ScopeArray::new(&x.scopes[..]);
             if let Some((scope, rest)) = items.split() {
                 scope.insert(key, value, location, rest);
@@ -666,7 +666,7 @@ impl Scope {
         let key = key.into();
 
         let location = panic::Location::caller();
-        self.inner.with_borrow_mut(|x| {
+        self.inner.with_borrow(|x| {
             let items = ScopeArray::new(&x.scopes[..]);
             if let Some((scope, rest)) = items.split() {
                 scope.remove(key, location, rest, &x.debug)
