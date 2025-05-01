@@ -1,38 +1,127 @@
-//! # Bypass: Thread-local dynamic variables #
+//! # Bypass: Thread-local dynamic key-value store #
 //!
 //! It is sometimes convenient to pass certain values by using an implicit
 //! environment. This crate implements such an environment. We "bypass" the
 //! standard way of passing values through arguments and return values, and
 //! instead store our values in a thread-local key-value store.
 //!
-//! This effectively mimics the concept of "dynamic variables" in some other
-//! languages.
+//! This approach effectively mimics the concept known as "dynamic variables"
+//! in other programming languages.
 //!
 //! # Examples #
 //!
 //! ```
-//! use bypass as by;
+//! // Define a thread-local scope.
+//! bypass::scope!(static MY_SCOPE);
 //!
-//! by::scope(|| {
-//!     by::insert("some name", 123);
+//! MY_SCOPE.scope(|| {
+//!     MY_SCOPE.insert("some name", 123);
 //!     some_function();
 //! });
 //!
 //! fn some_function() {
-//!     let item: i32 = by::get("some name");
-//!     println!("Fetched some name: {}", item);
+//!     let item: i32 = MY_SCOPE.get("some name");
+//!     println!("Fetched 'some name': {}", item);
 //! }
 //! ```
 //!
-//! This also allows us to pass data back by calling [insert] inside
-//! `some_function`, and calling [get] or [remove] after the function call
+//! This also allows us to pass from `some_function` to the caller by calling
+//! [insert](Scope::insert) inside `some_function` followed by calling
+//! [get](Scope::get) or [remove](Scope::remove) after the function call
 //! completes.
+//!
+//! # Scoping #
+//!
+//! If we want to call a function that `inserts` some key-value pair multiple
+//! times, then the second insert will panic because the key already exists due
+//! to the first call. For this purpose we can create a new sub-scope using
+//! [scope](crate::Scope). This sub-scope is completely isolated from its parent
+//! unless a key is [lift](Scope::lift)ed.
+//!
+//! ```
+//! bypass::scope!(static MAIN);
+//!
+//! // Initial scope.
+//! MAIN.scope(|| {
+//!     for _ in 0..10 {
+//!         MAIN.scope(|| function());
+//!     }
+//! });
+//!
+//! fn function() {
+//!     MAIN.insert("x", 123);
+//!
+//!     // Further calls that use "x"
+//!     // ...
+//! }
+//! ```
+//!
+//! # Lifting #
+//!
+//! Lifting a key inside a scope means to defer all its [core operations] to the
+//! parent scope, if any such parent exists.
+//!
+//! ```
+//! bypass::scope!(static MAIN);
+//!
+//! MAIN.scope(|| {
+//!     MAIN.insert("x", 123);
+//!
+//!     MAIN.scope(|| {
+//!         MAIN.lift("x");
+//!         let value: i32 = MAIN.get("x");
+//!         println!("x={}", value);
+//!     });
+//! });
+//! ```
+//!
+//! Without lifting `"x"` the innermost scope would not be able to access the
+//! insert that was performed in the outer scope.
+//!
+//! Similarly, lifts also apply to not-yet-inserted items.
+//!
+//! ```
+//! bypass::scope!(static MAIN);
+//!
+//! MAIN.scope(|| {
+//!     MAIN.scope(|| {
+//!         MAIN.lift("x");
+//!         MAIN.insert("x", 123);
+//!     });
+//!
+//!     let value: i32 = MAIN.get("x");
+//!     println!("x={}", value);
+//! });
+//! ```
+//!
+//! The above would panic on `get` if the lift were to be removed.
+//!
+//! ## Translations ##
+//!
+//! Lifts allow you to translate a key. This can be useful when two pieces of
+//! code attempt to insert the same key, so you wrap one piece of code in a
+//! scope that lifts that key into another key.
+//!
+//! ```
+//! bypass::scope!(static MAIN);
+//!
+//! MAIN.scope(|| {
+//!     MAIN.scope(|| {
+//!         // Translates any core operation on "x" into "y".
+//!         MAIN.lift("x").to("y");
+//!         MAIN.insert("x", 123);
+//!     });
+//!
+//!     let value: i32 = MAIN.get("y");
+//!     println!("y={}", value);
+//! });
+//! ```
 //!
 //! # Intended usage #
 //!
 //! Bypass is not intended to supplant the normal
 //! argument-and-return method of passing data around. Its main purpose is to
-//! provide a way to avoid tramp data - data that is only passed through a
+//! provide a way to avoid tramp data, i.e. data that is only passed through a
 //! significant amount of functions without being used directly.
 //!
 //! Passing such data along through every intermediary may be cumbersome and
@@ -46,29 +135,42 @@
 //! where we are not interested in returning it through every stack frame
 //! manually.
 //!
-//! # Panics #
-//!
-//! Because of its intended usage being for semi-global configuration
-//! parameters, or during the construction of objects in deeply nested object
-//! chains, bypass will panic
-//! if a key is not found, or the type is not what we expected.
+//! As such, this library explicitly does not provide methods like `contains`, and panics as soon
+//! as something is not as expected.
 //!
 //! # Logging #
 //!
 //! Keys can be either `&'static str` or a `String`. When strings are
 //! constructed (e.g. via `format!`), it may be hard to figure out where a key
 //! is inserted in a codebase. To debug this library you can set a logger via
-//! [debug]. This logger is local to the current thread.
+//! [debug](Scope::debug).
 //!
 //! If no logger is set then the default logger will be used that prints all
-//! operations to stderr. The default logger prints the code location from where
-//! each operation ([scope], [insert], [get], [remove]) is called using
-//! `#[track_caller]`.
+//! operations to stderr. The default logger prints the code location of each
+//! [get](Scope::get) and [remove](Scope::remove), and at which location that
+//! data was inserted at.
+//!
+//! The output per operation looks like the following.
+//!
+//! ```text
+//! bypass: get "a" | tests/test.rs:206:28 <--- tests/test.rs:193:11
+//! |         |  |      |                       |
+//! | Library |  | Key  | Called from           | Inserted at
+//!           |
+//!           | Operation type
+//! ```
 //!
 //! # Dropping #
 //!
 //! Upon exiting a [scope], values that are part of that scope will be dropped
-//! in the lexicographic order of their associated keys.
+//! in lexicographic order of their associated keys.
+//!
+//! # Core Operations #
+//!
+//! Core operations are [insert](Scope::insert), [get](Scope::get), and
+//! [remove](Scope::remove).
+//!
+//! [core operations]: crate#core-operations
 #![deny(
     missing_docs,
     rustdoc::broken_intra_doc_links,
@@ -76,746 +178,519 @@
     unused_imports,
     unused_qualifications
 )]
-use scoped_tls::scoped_thread_local;
 use std::{
-    any::{Any, type_name},
+    any::Any,
     borrow::Cow,
-    cell::{Cell, RefCell},
+    cell::RefCell,
     collections::{BTreeMap, HashMap},
-    fmt,
-    panic::Location,
-    rc::{Rc, Weak},
+    fmt, panic,
 };
 
-scoped_thread_local! {
-    static SCOPE: Rc<Store>
+/// Creates a scope.
+#[macro_export]
+macro_rules! scope {
+    ($(#[$attrs:meta])* $vis:vis static $name:ident) => (
+        $(#[$attrs])*
+        /// [bypass](crate) scope.
+        $vis static $name: $crate::Scope = $crate::Scope {
+            inner: {
+                ::std::thread_local!(static FOO: ::std::cell::RefCell<$crate::ScopeInner> = {
+                    ::std::cell::RefCell::new($crate::ScopeInner::new())
+                });
+                &FOO
+            },
+        };
+    )
 }
 
-type LoggerFn = Box<dyn Fn(Log)>;
+type Location = &'static panic::Location<'static>;
 
-fn default_logger() -> Box<dyn Fn(Log)> {
-    let nesting = Cell::new(0);
-    Box::new(move |log| match log {
-        Log::Scope { location, begin } => {
-            if begin {
-                eprintln!(
-                    "{:>width$}[bypass] => enter scope depth={} ({})",
-                    "",
-                    nesting.get(),
-                    location,
-                    width = nesting.get() * 2
-                );
-                nesting.set(nesting.get() + 1);
-            } else {
-                nesting.set(nesting.get() - 1);
-                eprintln!(
-                    "{:>width$}[bypass] <= exit scope depth={} ({})",
-                    "",
-                    nesting.get(),
-                    location,
-                    width = nesting.get() * 2
-                );
-            }
-        }
-        Log::Operation {
-            location,
-            operation,
-            key,
-            r#type,
-        } => {
-            eprintln!(
-                "{:>width$}[bypass] {}: key={:?} type={:?} ({})",
-                "",
-                operation,
-                key,
-                r#type,
-                location,
-                width = nesting.get() * 2
-            );
-        }
-    })
+type CowStr = Cow<'static, str>;
+
+struct Item {
+    item: Box<dyn Any>,
+    location: Location,
 }
 
-thread_local! {
-    static LOGGER: RefCell<LoggerFn> = RefCell::new(default_logger());
-}
+struct ScopeArray<'a>(&'a [Store]);
 
-/// Used in logging to denote the type of operation that is going to be
-/// performed.
-pub enum OperationType {
-    /// The operation is [insert].
-    Insert,
-    /// The operation is [get].
-    Get,
-    /// The operation is [remove].
-    Remove,
-}
+impl<'a> ScopeArray<'a> {
+    fn new(scopes: &'a [Store]) -> Self {
+        Self(scopes)
+    }
 
-impl fmt::Display for OperationType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            OperationType::Insert => f.write_str("insert"),
-            OperationType::Get => f.write_str("get"),
-            OperationType::Remove => f.write_str("remove"),
+    fn split(&self) -> Option<(&Store, ScopeArray<'a>)> {
+        let len = self.0.len();
+        if len > 0 {
+            Some((&self.0[len - 1], ScopeArray::new(&self.0[0..len - 1])))
+        } else {
+            None
         }
     }
 }
 
-/// Describes the details of an operation to the logger.
-pub enum Log<'a> {
-    /// Informs the logger about a scope that has been entered or exited.
-    Scope {
-        /// Location of the [scope] call.
-        location: &'static Location<'static>,
-        /// True if the scope is entered. False if the scope is exited.
-        begin: bool,
-    },
-    /// Informs the logger about one of the operations ([insert], [get],
-    /// [remove]).
-    Operation {
-        /// Key used for the operation.
-        key: &'a Cow<'static, str>,
-        /// The operation type.
-        operation: OperationType,
-        /// Calling location for the operation.
-        location: &'static Location<'static>,
-        /// Name of the type (from [type_name] used for
-        /// the value in the operation.
-        r#type: &'static str,
-    },
+/// Describes the operation that is being performed.
+pub enum Operation {
+    /// Set to this value when a call to [get](Scope::get) is invoked.
+    Get,
+    /// Set to this value when a call to [remove](Scope::remove) is invoked.
+    Remove,
+}
+
+impl fmt::Display for Operation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Operation::Get => f.write_str("get"),
+            Operation::Remove => f.write_str("remove"),
+        }
+    }
+}
+
+/// Contains information used in logging.
+pub struct Log<'a> {
+    /// Type of operation, either [get](Scope::get) or [remove](Scope::remove).
+    pub operation: Operation,
+    /// Source location corresponding to the [insert](Scope::insert).
+    pub source: Location,
+    /// Source location from which [get](Scope::get) or [remove](Scope::remove)
+    /// was called.
+    pub destination: Location,
+    /// Key used to perform the lookup.
+    ///
+    /// This is the final key that was used, and may be different from the key
+    /// provided to [get](Scope::get) or
+    /// [remove](Scope::remove) due to [lift](Scope::lift)s that may have
+    /// translated the original key.
+    pub key: &'a CowStr,
+}
+
+impl<'a> fmt::Display for Log<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "bypass: {} {:?} | {} <--- {}",
+            self.operation, self.key, self.destination, self.source
+        )
+    }
 }
 
 struct Store {
     // This is a BTreeMap to make drop order deterministic.
-    items: RefCell<BTreeMap<Cow<'static, str>, Box<dyn Any>>>,
-    lifts: RefCell<HashMap<Cow<'static, str>, Cow<'static, str>>>,
-    parent: Weak<Store>,
+    items: RefCell<BTreeMap<CowStr, Item>>,
+    lifts: RefCell<HashMap<CowStr, (CowStr, Location)>>,
 }
 
 impl Store {
-    fn new(parent: Weak<Store>) -> Self {
+    fn new() -> Self {
         Self {
             items: Default::default(),
             lifts: Default::default(),
-            parent,
         }
     }
 
-    fn lift(&self, from: Cow<'static, str>) {
+    fn lift(&self, from: CowStr, location: Location) {
         assert!(
-            self.lifts.borrow_mut().insert(from.clone(), from).is_none(),
+            self.lifts
+                .borrow_mut()
+                .insert(from.clone(), (from, location))
+                .is_none(),
             "bypass: lift already exists"
         );
     }
 
-    fn lift_to(&self, from: Cow<'static, str>, to: Cow<'static, str>) {
+    fn lift_to(&self, from: CowStr, to: CowStr) {
         let mut binding = self.lifts.borrow_mut();
         let Some(entry) = binding.get_mut(&from) else {
             panic!("bypass: internal error");
         };
 
-        assert!(*entry == from, "bypass: lift already mapped");
+        assert!(entry.0 == from, "bypass: lift already mapped");
 
-        *entry = to;
+        entry.0 = to;
     }
 
-    fn insert<V: Any>(&self, key: Cow<'static, str>, value: V) {
+    fn insert<V: Any>(&self, key: CowStr, value: V, location: Location, parents: ScopeArray) {
         if let Some(lift) = self.lifts.borrow().get(&key) {
-            if let Some(parent) = self.parent.upgrade() {
-                parent.insert(lift.clone(), value);
+            if let Some((parent, rest)) = parents.split() {
+                parent.insert(lift.0.clone(), value, location, rest);
             } else {
-                self.insert_inner(lift.clone(), value);
+                self.insert_inner(lift.0.clone(), value, location);
             }
         } else {
-            self.insert_inner(key, value);
+            self.insert_inner(key, value, location);
         }
     }
 
-    fn insert_inner<V: Any>(&self, key: Cow<'static, str>, value: V) {
+    fn insert_inner<V: Any>(&self, key: CowStr, value: V, location: Location) {
         assert!(
             self.items
                 .borrow_mut()
-                .insert(key, Box::new(value))
+                .insert(
+                    key,
+                    Item {
+                        item: Box::new(value),
+                        location,
+                    }
+                )
                 .is_none()
         );
     }
 
-    fn get<V: Any + Clone>(&self, key: Cow<'static, str>) -> V {
+    fn get<V: Any + Clone>(
+        &self,
+        key: CowStr,
+        location: Location,
+        parents: ScopeArray,
+        logger: &dyn Fn(Log),
+    ) -> V {
         if let Some(lift) = self.lifts.borrow().get(&key) {
-            if let Some(parent) = self.parent.upgrade() {
-                parent.get(lift.clone())
+            if let Some((parent, rest)) = parents.split() {
+                parent.get(lift.0.clone(), location, rest, logger)
             } else {
-                self.get_inner(lift.clone())
+                self.get_inner(lift.0.clone(), location, logger)
             }
         } else {
-            self.get_inner(key)
+            self.get_inner(key, location, logger)
         }
     }
 
-    fn get_inner<V: Any + Clone>(&self, key: Cow<'static, str>) -> V {
+    fn get_inner<V: Any + Clone>(
+        &self,
+        key: CowStr,
+        location: Location,
+        logger: &dyn Fn(Log),
+    ) -> V {
         let this = self.items.borrow();
-        let item: &Box<dyn Any> = this
+        let item: &Item = this
             .get(&key)
             .unwrap_or_else(|| panic!("bypass: key not present: {:?}", key));
-        (*item)
+
+        let result = (*item.item)
             .downcast_ref::<V>()
             .expect("bypass: type not as expected")
-            .clone()
+            .clone();
+
+        let log = Log {
+            operation: Operation::Get,
+            source: item.location,
+            destination: location,
+            key: &key,
+        };
+        logger(log);
+
+        result
     }
 
-    fn remove<V: Any>(&self, key: Cow<'static, str>) -> V {
+    fn remove<V: Any>(
+        &self,
+        key: CowStr,
+        location: Location,
+        parents: ScopeArray,
+        logger: &dyn Fn(Log),
+    ) -> V {
         if let Some(lift) = self.lifts.borrow().get(&key) {
-            if let Some(parent) = self.parent.upgrade() {
-                parent.remove(lift.clone())
+            if let Some((parent, rest)) = parents.split() {
+                parent.remove(lift.0.clone(), location, rest, logger)
             } else {
-                self.remove_inner(lift.clone())
+                self.remove_inner(lift.0.clone(), location, logger)
             }
         } else {
-            self.remove_inner(key)
+            self.remove_inner(key, location, logger)
         }
     }
 
-    fn remove_inner<V: Any>(&self, key: Cow<'static, str>) -> V {
+    fn remove_inner<V: Any>(&self, key: CowStr, location: Location, logger: &dyn Fn(Log)) -> V {
         let mut this = self.items.borrow_mut();
-        let item: Box<dyn Any> = this
+        let item: Item = this
             .remove(&key)
             .unwrap_or_else(|| panic!("bypass: key not present: {:?}", key));
-        *item.downcast::<V>().expect("bypass: type not as expected")
-    }
-}
 
-/// Reference to a scope instance.
-///
-/// Provides a reference to a scope. Can only be created and fetched using
-/// [name].
-///
-/// # Examples #
-///
-/// ```
-/// use bypass as by;
-///
-/// by::scope(|| {
-///     by::name("this-scope");
-///
-///     let scope: by::Scope = by::get("this-scope");
-///     scope.insert("x", 123);
-///
-///     let value: i32 = by::get("x");
-///     assert_eq!(value, 123);
-/// });
-/// ```
-pub struct Scope {
-    store: Weak<Store>,
-}
-
-impl Scope {
-    fn new(store: Weak<Store>) -> Self {
-        Self { store }
-    }
-
-    /// Inserts an item into this scope, effectively [crate::insert] but on this
-    /// specific scope.
-    pub fn insert<K: Into<Cow<'static, str>>, V: Any + Clone>(&self, key: K, value: V) {
-        let key = key.into();
-        let Some(store) = self.store.upgrade() else {
-            panic!("scope no longer exists");
+        let log = Log {
+            operation: Operation::Remove,
+            source: item.location,
+            destination: location,
+            key: &key,
         };
-        store.insert(key, value)
-    }
 
-    /// Gets an item from this scope, effectively [crate::get] but on this
-    /// specific scope.
-    pub fn get<K: Into<Cow<'static, str>>, V: Any + Clone>(&self, key: K) -> V {
-        let key = key.into();
-        let Some(store) = self.store.upgrade() else {
-            panic!("scope no longer exists");
-        };
-        store.get(key)
-    }
+        logger(log);
 
-    /// Removes an item from this scope, effectively [crate::get] but on this
-    /// specific scope.
-    pub fn remove<K: Into<Cow<'static, str>>, V: Any>(&self, key: K) -> V {
-        let key = key.into();
-        let Some(store) = self.store.upgrade() else {
-            panic!("scope no longer exists");
-        };
-        store.remove(key)
+        let result = (item.item)
+            .downcast::<V>()
+            .unwrap_or_else(|_| panic!("bypass: type not as expected"));
+
+        *result
     }
 }
 
-impl Clone for Scope {
-    fn clone(&self) -> Self {
-        Self {
-            store: self.store.clone(),
-        }
-    }
-}
-
-/// Creates a new scope.
-///
-/// A scope is a completely isolated key-value store. Subsequent [insert]s,
-/// [get]s, and [remove]s will use this new scope unless [lift]ed to the parent
-/// scope.
-///
-/// Upon returning from `work` all stored items are dropped and the previous
-/// scope (if any) will be restored.
+/// Allows setting a translation on a [lift](Scope::lift).
 ///
 /// # Examples #
 ///
 /// ```
-/// use bypass as by;
-/// by::scope(|| {});
-/// ```
-#[track_caller]
-pub fn scope<F, R>(work: F) -> R
-where
-    F: FnOnce() -> R,
-{
-    let location = Location::caller();
-    let info = Log::Scope {
-        location,
-        begin: true,
-    };
-
-    LOGGER.with_borrow(move |log| {
-        log(info);
-    });
-
-    struct Defer(&'static Location<'static>);
-
-    impl Drop for Defer {
-        fn drop(&mut self) {
-            let info = Log::Scope {
-                location: self.0,
-                begin: false,
-            };
-
-            LOGGER.with_borrow(move |log| {
-                log(info);
-            });
-        }
-    }
-
-    let defer = Defer(location);
-
-    let parent = if SCOPE.is_set() {
-        SCOPE.with(Rc::downgrade)
-    } else {
-        Weak::new()
-    };
-
-    let store = Rc::new(Store::new(parent));
-    let result = SCOPE.set(&store, work);
-
-    drop(defer);
-
-    result
-}
-
-/// Sets the thread-local logger.
+/// bypass::scope!(static SCOPE);
 ///
-/// It's possible to set a logging function for this crate. Each operation will
-/// invoke the log function with a [Log].
-///
-/// If no logger is specified then the default logger is used.
-///
-/// # Rationale #
-///
-/// When we perform an operation such as `bypass::insert(format!("{}", 3 - 2),
-/// ())`, it will be hard to use code searching tools to figure out where the
-/// key "1" was inserted. As such, logging provides us with the code location
-/// and the actual key so we can easily track down where a certain key was
-/// set.
-///
-/// # Examples #
-///
-/// This is the default logger.
-///
-/// ```
-/// use bypass::Log;
-/// use std::cell::Cell;
-///
-/// bypass::debug({
-///     let nesting = Cell::new(0);
-///     Box::new(move |log: Log<'_>| match log {
-///         Log::Scope { location, begin } => {
-///             if begin {
-///                 eprintln!(
-///                     "{:>width$}[bypass] => enter scope depth={} ({})",
-///                     "",
-///                     nesting.get(),
-///                     location,
-///                     width = nesting.get() * 2
-///                 );
-///                 nesting.set(nesting.get() + 1);
-///             } else {
-///                 nesting.set(nesting.get() - 1);
-///                 eprintln!(
-///                     "{:>width$}[bypass] <= exit scope depth={} ({})",
-///                     "",
-///                     nesting.get(),
-///                     location,
-///                     width = nesting.get() * 2
-///                 );
-///             }
-///         }
-///         Log::Operation {
-///             location,
-///             operation,
-///             key,
-///             r#type,
-///         } => {
-///             eprintln!(
-///                 "{:>width$}[bypass] {}: key={:?} type={:?} ({})",
-///                 "",
-///                 operation,
-///                 key,
-///                 r#type,
-///                 location,
-///                 width = nesting.get() * 2
-///             );
-///         }
-///     })
-/// });
-/// ```
-pub fn debug<F: Fn(Log) + 'static>(logger: F) {
-    LOGGER.with_borrow_mut(|x| *x = Box::new(logger));
-}
-
-/// Allows setting a translation on a [lift].
-///
-/// # Examples #
-///
-/// ```
-/// use bypass as by;
-///
-/// by::scope(|| {
-///     let lift: by::Lift = by::lift("x");
+/// SCOPE.scope(|| {
+///     let lift: bypass::Lift = SCOPE.lift("x");
 ///     lift.to("y");
 ///
 ///     // Typically written as:
-///     by::lift("a").to("b");
+///     SCOPE.lift("a").to("b");
 /// });
-pub struct Lift(Cow<'static, str>);
+pub struct Lift(&'static std::thread::LocalKey<RefCell<ScopeInner>>, CowStr);
 
 impl Lift {
-    fn new(name: Cow<'static, str>) -> Self {
-        Self(name)
+    fn new(scope: &'static std::thread::LocalKey<RefCell<ScopeInner>>, name: CowStr) -> Self {
+        Self(scope, name)
     }
 
     /// Map a lift to anohter name.
-    pub fn to<T: Into<Cow<'static, str>>>(self, to: T) {
+    pub fn to<T: Into<CowStr>>(self, to: T) {
         let to = to.into();
-        SCOPE.with(|store| {
-            store.lift_to(self.0.clone(), to);
+        self.0.with_borrow_mut(|x| {
+            x.scopes.last_mut().expect(NO_SCOPE).lift_to(self.1, to);
         });
     }
 }
 
-/// Puts the scope into the scope itself.
-///
-/// This is useful if we want to expose the entirety of this scope to a more
-/// deeply nested scope.
+const NO_SCOPE: &str = "bypass: scope has not been created";
+
+/// Named scope created using [bypass::scope](crate::scope).
 ///
 /// # Examples #
 ///
 /// ```
-/// use bypass as by;
+/// // Declare a thread-local scope called `NAME`.
+/// bypass::scope!(static NAME);
 ///
-/// by::scope(|| {
-///     by::name("my-scope-name");
-///     by::insert("input", 123);
-///
-///     by::scope(|| {
-///         by::lift("my-scope-name");
-///         let scope: by::Scope = by::get("my-scope-name");
-///
-///         let input: i32 = scope.get("input");
-///         assert_eq!(input, 123);
-///
-///         scope.insert("output", 456);
-///     });
-///
-///     let output: i32 = by::get("output");
-///     assert_eq!(output, 456);
+/// // Creates the first, top-level subscope.
+/// NAME.scope(|| {
+///     // Perform operations on the scope.
+///     NAME.insert("x", 123);
 /// });
 /// ```
-///
-/// ## Bypassing middleware #
-///
-/// Naming scopes is particularly useful when we need to access many variables
-/// through middleware. We could [lift] each variable, but if there are many of
-/// them, then that will quickly become cumbersome.
-///
-/// The following example shows how we can do this by wrapping our middleware in
-/// a scope that lifts a specific name to the top-level scope. The handler again
-/// scopes itself, and lifts through the middleware. This allows us to access
-/// the top-level scope.
-///
-/// The only requirement at each scope is that we `lift` appropriately.
-///
-/// ```
-/// use bypass as by;
-///
-/// by::scope(|| {
-///     by::name("my-scope-name");
-///     by::insert("some-value", 123);
-///
-///     by::scope(|| {
-///         by::lift("something-not-used-by-middleware").to("my-scope-name");
-///         middleware(handler);
-///     });
-///
-///     let output: &str = by::get("output-some-value");
-///     assert_eq!(output, "lorem ipsum");
-/// });
-///
-/// fn middleware(handler: fn()) {
-///     // Used by middleware only, these are not visible to the other scopes because they are not
-///     // lifted.
-///     by::insert("my-scope-name", 8);
-///     by::insert("some-value", 456);
-///     by::insert("output-some-value", "only used by middleware");
-///     (handler)();
-/// }
-///
-/// fn handler() {
-///     by::scope(|| {
-///         by::lift("my-scope-name").to("something-not-used-by-middleware");
-///         let scope: by::Scope = by::get("my-scope-name");
-///         let value: i32 = scope.get("some-value");
-///         assert_eq!(value, 123);
-///
-///         scope.insert("output-some-value", "lorem ipsum");
-///     });
-/// }
-/// ```
-///
-/// If we update our middleware and it now uses
-/// `something-not-used-by-middleware`, then we just need to change the string
-/// to something that doesn't collide. In any case, we will be notified
-/// of a panic due to mismatching types. If the types do happen to coincide,
-/// then it's exceedingly likely that a panic occurs due to some unexpected
-/// value not being present, or some kind of double-insert.
-///
-/// You can still share other values into the middleware as well by [lift]ing
-/// these manually.
-pub fn name<A: Into<Cow<'static, str>>>(name: A) {
-    SCOPE.with(|store| {
-        insert(name, Scope::new(Rc::downgrade(store)));
-    });
+pub struct Scope {
+    #[doc(hidden)]
+    pub inner: &'static std::thread::LocalKey<RefCell<ScopeInner>>,
 }
 
-/// Declares a key to refer to the parent scope instead.
-///
-/// Each [scope] on its own is completely isolated from other scopes, unless a
-/// key is lifted. Lifting makes it so that any operations ([insert], [get], and
-/// [remove]) will translate their keys according to [lift] into the parent
-/// scope.
-///
-/// # Panics #
-///
-/// Panics if a lift of the same name is already present.
-///
-/// # Examples #
-///
-/// ```
-/// use bypass as by;
-///
-/// by::scope(|| {
-///     by::insert("x", 123);
-///
-///     by::scope(|| {
-///         by::lift("x");
-///         by::lift("y");
-///
-///         let x: i32 = by::get("x");
-///         assert_eq!(x, 123);
-///
-///         by::insert("y", 456);
-///     });
-///
-///     let y: i32 = by::get("y");
-///     assert_eq!(y, 456);
-/// });
-/// ```
-///
-/// Lifts can also be used to translate the keys when accessing the parent scope
-/// using [Lift::to].
-///
-/// ```
-/// use bypass as by;
-///
-/// by::scope(|| {
-///     by::insert("x", 123);
-///
-///     by::scope(|| {
-///         by::lift("y").to("x");
-///
-///         let y: i32 = by::get("y");
-///         assert_eq!(y, 123);
-///     });
-/// });
-/// ```
-///
-/// If we lift in the the top-level scope for the thread, then the key is
-/// inserted into the current scope since there is no parent scope. Wrapping
-/// this in a parent scope later on will not change the behavior from the
-/// perspective of this scope.
-///
-/// ```
-/// use bypass as by;
-///
-/// by::scope(|| {
-///     by::lift("x");
-///     by::insert("x", 123);
-///     let x: i32 = by::get("x");
-///     assert_eq!(x, 123);
-/// });
-///
-/// by::scope(|| {
-///     // This scope is effectively functionally identical, all operations work as expected.
-///     // The only error that can occur is if the parent scope introduces "x" as well; we will
-///     // then get a panic.
-///     by::scope(|| {
-///         by::lift("x");
-///         by::insert("x", 123);
-///         let x: i32 = by::get("x");
-///         assert_eq!(x, 123);
-///     });
-/// });
-/// ```
-pub fn lift<A: Into<Cow<'static, str>>>(from: A) -> Lift {
-    SCOPE.with(|store| {
+impl Scope {
+    /// Creates a subscope that captures [core
+    /// operations](crate#core-operations) for the duration of `work`.
+    ///
+    /// A subscope is an empty, isolated scope. It can refer to its parent using
+    /// [lift](Scope::lift).
+    ///
+    /// # Examples #
+    ///
+    /// ```
+    /// bypass::scope!(static NAME);
+    ///
+    /// NAME.scope(|| {
+    ///     NAME.insert("x", 1);
+    ///
+    ///     NAME.scope(|| {
+    ///         NAME.insert("x", 2);
+    ///
+    ///         let value: i32 = NAME.get("x");
+    ///         assert_eq!(value, 2);
+    ///     });
+    ///
+    ///     let value: i32 = NAME.get("x");
+    ///     assert_eq!(value, 1);
+    /// });
+    /// ```
+    pub fn scope<F, R>(&self, work: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        self.inner.with_borrow_mut(|x| x.scopes.push(Store::new()));
+
+        struct OnDrop<'a>(&'a Scope);
+
+        impl Drop for OnDrop<'_> {
+            fn drop(&mut self) {
+                self.0.inner.with_borrow_mut(|x| x.scopes.pop());
+            }
+        }
+
+        let on_drop = OnDrop(self);
+
+        let result = (work)();
+
+        drop(on_drop);
+        result
+    }
+
+    /// Sets the debugger for this scope.
+    ///
+    /// `log` will be called for each [get](Scope::get) and
+    /// [remove](Scope::remove).
+    ///
+    /// # Examples #
+    ///
+    /// ```
+    /// bypass::scope!(static X);
+    ///
+    /// X.debug(|log| { println!("{}", log); });
+    /// ```
+    pub fn debug<F>(&self, log: F)
+    where
+        F: Fn(Log) + 'static,
+    {
+        self.inner.with_borrow_mut(|x| x.debug = Box::new(log));
+    }
+
+    /// Lifts a given key to the parent scope.
+    ///
+    /// [Core operations](crate#core-operations) that are performed after a
+    /// `lift` with the same key will perform their operations in the parent
+    /// scope. If no parent scope exists then the current scope is used.
+    ///
+    /// # Panics #
+    ///
+    /// Panics if a lift of the same key already exists.
+    ///
+    /// # Examples #
+    ///
+    /// ```
+    /// bypass::scope!(static X);
+    ///
+    /// X.scope(|| {
+    ///     X.insert("x", 123);
+    ///     X.scope(|| {
+    ///         X.lift("x");
+    ///         let value: i32 = X.get("x");
+    ///         println!("{}", value);
+    ///     });
+    /// });
+    /// ```
+    #[track_caller]
+    pub fn lift<A: Into<CowStr>>(&self, from: A) -> Lift {
+        let location = panic::Location::caller();
+
         let from = from.into();
-        store.lift(from.clone());
-        Lift::new(from)
-    })
+
+        self.inner.with_borrow_mut(|x| {
+            x.scopes
+                .last_mut()
+                .expect(NO_SCOPE)
+                .lift(from.clone(), location);
+            Lift::new(self.inner, from)
+        })
+    }
+
+    /// Inserts an entry into the scope.
+    ///
+    /// # Panics #
+    ///
+    /// Panics if the key already exists.
+    ///
+    /// # Example #
+    ///
+    /// ```
+    /// bypass::scope!(static X);
+    ///
+    /// X.scope(|| {
+    ///     X.insert("abc", 123);
+    /// });
+    /// ```
+    #[track_caller]
+    pub fn insert<K: Into<CowStr>, V: Any>(&self, key: K, value: V) {
+        let key = key.into();
+
+        let location = panic::Location::caller();
+
+        self.inner.with_borrow_mut(|x| {
+            let items = ScopeArray::new(&x.scopes[..]);
+            if let Some((scope, rest)) = items.split() {
+                scope.insert(key, value, location, rest);
+            } else {
+                panic!("{}", NO_SCOPE);
+            }
+        })
+    }
+
+    /// Gets a clone of an entry from the scope.
+    ///
+    /// # Panics #
+    ///
+    /// Panics if the key does not exist, or if the value associated with
+    /// this key is not does not match `V`.
+    ///
+    /// # Examples #
+    ///
+    /// ```
+    /// bypass::scope!(static X);
+    ///
+    /// X.scope(|| {
+    ///     X.insert("abc", 123);
+    ///     let value: i32 = X.get("abc");
+    ///     println!("{}", value);
+    /// });
+    /// ```
+    #[track_caller]
+    pub fn get<V: Any + Clone, K: Into<CowStr>>(&self, key: K) -> V {
+        let key = key.into();
+
+        let location = panic::Location::caller();
+        self.inner.with_borrow(|x| {
+            let items = ScopeArray::new(&x.scopes[..]);
+            if let Some((scope, rest)) = items.split() {
+                scope.get(key, location, rest, &x.debug)
+            } else {
+                panic!("{}", NO_SCOPE)
+            }
+        })
+    }
+
+    /// Removes an entry from the scope.
+    ///
+    /// # Panics #
+    ///
+    /// Panics if the key does not exist, or if the value associated with
+    /// this key is not does not match `V`.
+    ///
+    /// # Examples #
+    ///
+    /// ```
+    /// bypass::scope!(static X);
+    ///
+    /// X.scope(|| {
+    ///     X.insert("abc", 123);
+    ///     let value: i32 = X.remove("abc");
+    ///     println!("{}", value);
+    /// });
+    /// ```
+    #[track_caller]
+    pub fn remove<V: Any, K: Into<CowStr>>(&self, key: K) -> V {
+        let key = key.into();
+
+        let location = panic::Location::caller();
+        self.inner.with_borrow_mut(|x| {
+            let items = ScopeArray::new(&x.scopes[..]);
+            if let Some((scope, rest)) = items.split() {
+                scope.remove(key, location, rest, &x.debug)
+            } else {
+                panic!("{}", NO_SCOPE)
+            }
+        })
+    }
 }
 
-/// Inserts a key and value into the current scope.
-///
-/// If a [lift] of the same key has been defined, the parent scope will be used
-/// instead.
-///
-/// # Panics #
-///
-/// Panics if not called from within a [scope].
-/// Panics if a key already exists then this function panics.
-///
-/// # Examples #
-///
-/// ```
-/// use bypass as by;
-///
-/// by::scope(|| {
-///     by::insert("x", 123);
-///     by::insert(format!("abc/{}", 10), String::new());
-/// });
-/// ```
-#[track_caller]
-pub fn insert<K: Into<Cow<'static, str>>, V: Any>(key: K, value: V) {
-    let key = key.into();
-
-    let info = Log::Operation {
-        key: &key,
-        operation: OperationType::Insert,
-        location: Location::caller(),
-        r#type: type_name::<V>(),
-    };
-
-    LOGGER.with_borrow(move |log| {
-        log(info);
-    });
-
-    assert!(SCOPE.is_set(), "bypass: scope has not been created");
-
-    SCOPE.with(|store| {
-        store.insert(key, value);
-    });
+#[doc(hidden)]
+pub struct ScopeInner {
+    scopes: Vec<Store>,
+    debug: Box<dyn Fn(Log)>,
 }
 
-/// Gets a clone of a value associated with a key from the current scope.
-///
-/// If a [lift] of the same key has been defined, the parent scope will be used
-/// instead.
-///
-/// # Panics #
-///
-/// Panics if the key does not exist or if the value is not of the same type
-/// that was stored.
-///
-/// # Examples #
-///
-/// ```
-/// use bypass as by;
-///
-/// by::scope(|| {
-///     by::insert("x", 123);
-///
-///     let value: i32 = by::get("x");
-///     assert_eq!(value, 123);
-/// });
-/// ```
-#[track_caller]
-pub fn get<V: Any + Clone, K: Into<Cow<'static, str>>>(key: K) -> V {
-    let key = key.into();
-
-    let info = Log::Operation {
-        key: &key,
-        operation: OperationType::Get,
-        location: Location::caller(),
-        r#type: type_name::<V>(),
-    };
-
-    LOGGER.with_borrow(move |log| {
-        log(info);
-    });
-
-    assert!(SCOPE.is_set(), "bypass: scope has not been created");
-
-    SCOPE.with(|store| store.get(key))
-}
-
-/// Removes a value associated with a key and returns it from the current scope.
-///
-/// If a [lift] of the same key has been defined, the parent scope will be used
-/// instead.
-///
-/// # Panics #
-///
-/// Panics if the key does not exist or if the value is not of the same type
-/// that was stored.
-///
-/// # Examples #
-///
-/// ```
-/// use bypass as by;
-///
-/// by::scope(|| {
-///     by::insert("x", 123);
-///
-///     let value: i32 = by::remove("x");
-///     assert_eq!(value, 123);
-/// });
-/// ```
-#[track_caller]
-pub fn remove<V: Any, K: Into<Cow<'static, str>>>(key: K) -> V {
-    let key = key.into();
-
-    let info = Log::Operation {
-        key: &key,
-        operation: OperationType::Remove,
-        location: Location::caller(),
-        r#type: type_name::<V>(),
-    };
-
-    LOGGER.with_borrow(move |log| {
-        log(info);
-    });
-
-    assert!(SCOPE.is_set(), "bypass: scope has not been created");
-
-    SCOPE.with(|store| store.remove(key))
+impl ScopeInner {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        Self {
+            scopes: Vec::new(),
+            debug: Box::new(|log| {
+                eprintln!("{}", log);
+            }),
+        }
+    }
 }

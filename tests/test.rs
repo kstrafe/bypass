@@ -1,114 +1,109 @@
-use bypass::{Log, Scope, debug, get, insert, lift, name, remove, scope};
+use bypass::scope;
 use std::{cell::RefCell, panic, rc::Rc};
+
+scope!(static X);
 
 #[test]
 fn logger_invocation() {
     let capture = Rc::new(RefCell::new(String::new()));
     let capture_clone = capture.clone();
 
-    debug(move |log| {
+    X.debug(move |log| {
         let mut string = capture_clone.borrow_mut();
-        match log {
-            Log::Scope { location, begin } => {
-                *string += &format!("scope({}{})", location, begin);
-            }
-            Log::Operation {
-                location,
-                operation,
-                key,
-                r#type,
-            } => {
-                *string += &format!("oper({}{}{:?}{:?})", location, operation, key, r#type);
-            }
-        }
+        *string += &format!("{}\n", log);
     });
 
-    scope(|| {
-        insert("a", 123);
-        scope(|| {
-            insert("a", 456);
-            let _: i32 = get("a");
-            let _: i32 = remove("a");
+    X.scope(|| {
+        X.insert("a", 123);
+        X.scope(|| {
+            X.insert("a", 456);
+            let _: i32 = X.get("a");
+            let _: i32 = X.remove("a");
         });
-        insert("b", "lorem ipsum");
-        insert("c", 789);
+        X.insert("b", "lorem ipsum");
+        X.insert("c", 789);
     });
 
     assert_eq!(
         *capture.borrow(),
-        "scope(tests/test.rs:26:5true)oper(tests/test.rs:27:9insert\"a\"\"i32\")scope(tests/test.rs:28:9true)oper(tests/test.rs:29:13insert\"a\"\"i32\")oper(tests/test.rs:30:26get\"a\"\"i32\")oper(tests/test.rs:31:26remove\"a\"\"i32\")scope(tests/test.rs:28:9false)oper(tests/test.rs:33:9insert\"b\"\"&str\")oper(tests/test.rs:34:9insert\"c\"\"i32\")scope(tests/test.rs:26:5false)"
+        concat!(
+            r#"bypass: get "a" | tests/test.rs:20:28 <--- tests/test.rs:19:15"#,
+            "\n",
+            r#"bypass: remove "a" | tests/test.rs:21:28 <--- tests/test.rs:19:15"#,
+            "\n",
+        )
     );
 }
 
 #[test]
 #[should_panic(expected = "bypass: scope has not been created")]
 fn no_scope_insert() {
-    insert("", ());
+    X.insert("", ());
 }
 
 #[test]
 #[should_panic(expected = "bypass: scope has not been created")]
 fn no_scope_get() {
-    let _: () = get("");
+    let _: () = X.get("");
 }
 
 #[test]
 #[should_panic(expected = "bypass: scope has not been created")]
 fn no_scope_remove() {
-    let _: () = remove("");
+    let _: () = X.remove("");
 }
 
 #[test]
 #[should_panic(expected = "bypass: key not present: \"\"")]
 fn get_nonexistent() {
-    scope(|| {
-        let _: () = get("");
+    X.scope(|| {
+        let _: () = X.get("");
     });
 }
 
 #[test]
 #[should_panic(expected = "bypass: key not present: \"\"")]
 fn remove_nonexistent() {
-    scope(|| {
-        let _: () = remove("");
+    X.scope(|| {
+        let _: () = X.remove("");
     });
 }
 
 #[test]
 #[should_panic(expected = "bypass: type not as expected")]
 fn get_type_mismatch() {
-    scope(|| {
-        insert("", 0i32);
-        let _: u32 = get("");
+    X.scope(|| {
+        X.insert("", 0i32);
+        let _: u32 = X.get("");
     });
 }
 
 #[test]
 #[should_panic(expected = "bypass: type not as expected")]
 fn remove_type_mismatch() {
-    scope(|| {
-        insert("", 0i32);
-        let _: u32 = remove("");
+    X.scope(|| {
+        X.insert("", 0i32);
+        let _: u32 = X.remove("");
     });
 }
 
 #[test]
 fn insert_and_get() {
-    scope(|| {
-        insert("a", 123);
-        let a: i32 = get("a");
+    X.scope(|| {
+        X.insert("a", 123);
+        let a: i32 = X.get("a");
         assert_eq!(a, 123);
 
-        let a2: i32 = get("a");
-        assert_eq!(a2, 123);
+        let a: i32 = X.get("a");
+        assert_eq!(a, 123);
     });
 }
 
 #[test]
 fn insert_and_remove() {
-    scope(|| {
-        insert("a", 123);
-        let a: i32 = remove("a");
+    X.scope(|| {
+        X.insert("a", 123);
+        let a: i32 = X.remove("a");
         assert_eq!(a, 123);
     });
 }
@@ -116,20 +111,20 @@ fn insert_and_remove() {
 #[test]
 #[should_panic(expected = "bypass: key not present: \"a\"")]
 fn insert_and_remove_twice() {
-    scope(|| {
-        insert("a", 123);
-        let a: i32 = remove("a");
+    X.scope(|| {
+        X.insert("a", 123);
+        let a: i32 = X.remove("a");
         assert_eq!(a, 123);
 
-        let _: i32 = remove("a");
+        let _: i32 = X.remove("a");
     });
 }
 
 #[test]
 fn non_clone() {
-    scope(|| {
-        insert("abc", String::from("lorem ipsum"));
-        let string: String = remove("abc");
+    X.scope(|| {
+        X.insert("abc", String::from("lorem ipsum"));
+        let string: String = X.remove("abc");
 
         assert_eq!(string, "lorem ipsum");
     });
@@ -147,11 +142,11 @@ fn drop_order() {
 
     let order = Rc::new(RefCell::new(Vec::new()));
 
-    scope(|| {
-        insert("longer name", Dropper(4, order.clone()));
-        insert("b", Dropper(2, order.clone()));
-        insert("c", Dropper(3, order.clone()));
-        insert("a", Dropper(1, order.clone()));
+    X.scope(|| {
+        X.insert("longer name", Dropper(4, order.clone()));
+        X.insert("b", Dropper(2, order.clone()));
+        X.insert("c", Dropper(3, order.clone()));
+        X.insert("a", Dropper(1, order.clone()));
     });
 
     assert!(order.borrow().len() == 4);
@@ -159,92 +154,56 @@ fn drop_order() {
 }
 
 #[test]
-fn logger_invoked_during_panic() {
-    let capture = Rc::new(RefCell::new(String::new()));
-    let capture_clone = capture.clone();
-
-    debug(move |log| {
-        let mut string = capture_clone.borrow_mut();
-        match log {
-            Log::Scope { begin, .. } => {
-                *string += if begin { "begin" } else { "end" };
-            }
-            Log::Operation { operation, .. } => {
-                *string += &format!("-{}-", operation);
-            }
-        }
-    });
-
-    let result = panic::catch_unwind(|| {
-        scope(|| {
-            let _: u32 = remove("");
-        });
-    });
-
-    let Err(error) = result else {
-        panic!("Expected panic");
-    };
-
-    assert_eq!(
-        *error.downcast::<String>().unwrap(),
-        "bypass: key not present: \"\""
-    );
-    assert_eq!(*capture.borrow(), "begin-remove-end");
-}
-
-#[test]
 fn scope_lift() {
-    scope(|| {
-        scope(|| {
-            lift("x");
-            insert("x", 123);
+    X.scope(|| {
+        X.scope(|| {
+            X.lift("x");
+            X.insert("x", 123);
         });
 
-        let value: i32 = get("x");
+        let value: i32 = X.get("x");
         assert_eq!(value, 123);
     });
 }
 
 #[test]
 fn scope_lift_middle() {
-    scope(|| {
-        scope(|| {
-            lift("scarecrow:intermediate").to("x");
-            insert("x", "ignore");
+    X.scope(|| {
+        X.scope(|| {
+            X.lift("scarecrow:intermediate").to("x");
+            X.insert("x", "ignore");
 
-            let value: &str = get("x");
+            let value: &str = X.get("x");
             assert_eq!(value, "ignore");
 
-            scope(|| {
-                lift("x").to("scarecrow:intermediate");
-                insert("x", 123);
+            X.scope(|| {
+                X.lift("x").to("scarecrow:intermediate");
+                X.insert("x", 123);
             });
         });
 
-        let value: i32 = get("x");
+        let value: i32 = X.get("x");
         assert_eq!(value, 123);
     });
 }
 
 #[test]
-fn middleware_circumnavigation() {
-    scope(|| {
-        name("top-level");
-        insert("input", "top-level string");
-
-        scope(|| {
-            lift("top-level");
-            scope(|| {
-                lift("top-level");
-                let sc: Scope = get("top-level");
-                sc.insert("x", 123);
-
-                let string: &str = sc.get("input");
-                assert_eq!(string, "top-level string");
+fn panic_across_scope() {
+    X.scope(|| {
+        X.insert("a", 1);
+        let result = panic::catch_unwind(|| {
+            X.scope(|| {
+                X.insert("a", 2);
+                panic!("error");
             });
         });
 
-        let value: i32 = get("x");
-        assert_eq!(value, 123);
+        let Err(error) = result else {
+            panic!("not caught");
+        };
+        assert_eq!(*error.downcast_ref::<&str>().unwrap(), "error");
+
+        let value: i32 = X.get("a");
+        assert_eq!(value, 1);
     });
 }
