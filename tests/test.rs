@@ -236,6 +236,39 @@ fn get_accesses_parent_scope_through_lift() {
 }
 
 #[test]
+fn modify_accesses_parent_scope() {
+    X.scope(|| {
+        X.insert("x", 123);
+        X.scope(|| {
+            X.scope(|| {
+                let value: i32 = X.modify("x", |x| {
+                    *x += 1;
+                    *x
+                });
+                assert_eq!(value, 124);
+            });
+        });
+    });
+}
+
+#[test]
+fn modify_accesses_parent_scope_through_lift() {
+    X.scope(|| {
+        X.insert("y", 123);
+        X.scope(|| {
+            X.lift("x").to("y");
+            X.scope(|| {
+                let value: i32 = X.modify("x", |x| {
+                    *x += 1;
+                    *x
+                });
+                assert_eq!(value, 124);
+            });
+        });
+    });
+}
+
+#[test]
 fn remove_accesses_parent_scope() {
     X.scope(|| {
         X.insert("x", 123);

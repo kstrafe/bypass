@@ -172,8 +172,8 @@
 //!
 //! # Core Operations #
 //!
-//! Core operations are [insert](Scope::insert), [get](Scope::get), and
-//! [remove](Scope::remove).
+//! Core operations are [insert](Scope::insert), [get](Scope::get),
+//! [modify](Scope::modify), and [remove](Scope::remove).
 //!
 //! [core operations]: crate#core-operations
 #![deny(
@@ -238,6 +238,8 @@ impl<'a> ScopeArray<'a> {
 pub enum Operation {
     /// Set to this value when a call to [get](Scope::get) is invoked.
     Get,
+    /// Set to this value when a call to [modify](Scope::modify) is invoked.
+    Modify,
     /// Set to this value when a call to [remove](Scope::remove) is invoked.
     Remove,
 }
@@ -246,6 +248,7 @@ impl fmt::Display for Operation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Operation::Get => f.write_str("get"),
+            Operation::Modify => f.write_str("modify"),
             Operation::Remove => f.write_str("remove"),
         }
     }
@@ -390,6 +393,58 @@ impl Store {
         logger(log);
 
         result
+    }
+
+    fn modify<V: Any, F: FnOnce(&mut V) -> R, R>(
+        &self,
+        key: CowStr,
+        modifier: F,
+        location: Location,
+        parents: ScopeArray,
+        logger: &dyn Fn(Log),
+    ) -> R {
+        if let Some(lift) = self.lifts.borrow().get(&key) {
+            if let Some((parent, rest)) = parents.split() {
+                parent.modify(lift.0.clone(), modifier, location, rest, logger)
+            } else {
+                self.modify_inner(lift.0.clone(), modifier, location, parents, logger)
+            }
+        } else {
+            self.modify_inner(key, modifier, location, parents, logger)
+        }
+    }
+
+    fn modify_inner<V: Any, F: FnOnce(&mut V) -> R, R>(
+        &self,
+        key: CowStr,
+        modifier: F,
+        location: Location,
+        parents: ScopeArray,
+        logger: &dyn Fn(Log),
+    ) -> R {
+        let mut this = self.items.borrow_mut();
+
+        let Some(item): Option<&mut Item> = this.get_mut(&key) else {
+            if let Some((parent, rest)) = parents.split() {
+                return parent.modify(key, modifier, location, rest, logger);
+            } else {
+                panic!("bypass: key not present: {:?}", key)
+            }
+        };
+
+        let value = (*item.item)
+            .downcast_mut::<V>()
+            .expect("bypass: type not as expected");
+
+        let log = Log {
+            operation: Operation::Modify,
+            source: item.location,
+            destination: location,
+            key: &key,
+        };
+        logger(log);
+
+        modifier(value)
     }
 
     fn remove<V: Any>(
@@ -660,6 +715,47 @@ impl Scope {
             let items = ScopeArray::new(&x.scopes[..]);
             if let Some((scope, rest)) = items.split() {
                 scope.get(key, location, rest, &x.debug)
+            } else {
+                panic!("{}", NO_SCOPE)
+            }
+        })
+    }
+
+    /// Modify an entry in the scope.
+    ///
+    /// # Panics #
+    ///
+    /// Panics if the key does not exist, or if the value associated with
+    /// this key is not does not match `V`.
+    ///
+    /// # Examples #
+    ///
+    /// ```
+    /// bypass::scope!(static X);
+    ///
+    /// X.scope(|| {
+    ///     X.insert("abc", 123);
+    ///     X.modify("abc", |item: &mut i32| {
+    ///         *item += 1;
+    ///     });
+    ///     let value: i32 = X.get("abc");
+    ///     println!("{}", value);
+    ///     assert_eq!(value, 124);
+    /// });
+    /// ```
+    #[track_caller]
+    pub fn modify<V: Any, K: Into<CowStr>, F: FnOnce(&mut V) -> R, R>(
+        &self,
+        key: K,
+        modifier: F,
+    ) -> R {
+        let key = key.into();
+
+        let location = panic::Location::caller();
+        self.inner.with_borrow(|x| {
+            let items = ScopeArray::new(&x.scopes[..]);
+            if let Some((scope, rest)) = items.split() {
+                scope.modify(key, modifier, location, rest, &x.debug)
             } else {
                 panic!("{}", NO_SCOPE)
             }
