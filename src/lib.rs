@@ -35,8 +35,10 @@
 //! If we want to call a function that `inserts` some key-value pair multiple
 //! times, then the second insert will panic because the key already exists due
 //! to the first call. For this purpose we can create a new sub-scope using
-//! [scope](crate::Scope). This sub-scope is completely isolated from its parent
-//! unless a key is [lift](Scope::lift)ed.
+//! [scope](crate::Scope). Such a "sub-scope" captures [insert](Scope::insert)s
+//! unless a [lift](Scope::lift)ed. Functions [get](Scope::get) and
+//! [remove](Scope::remove) will look for a matching key from the current scope
+//! towards the root scope.
 //!
 //! ```
 //! bypass::scope!(static MAIN);
@@ -44,11 +46,13 @@
 //! // Initial scope.
 //! MAIN.scope(|| {
 //!     for _ in 0..10 {
+//!         // Second scope.
 //!         MAIN.scope(|| function());
 //!     }
 //! });
 //!
 //! fn function() {
+//!     // Only lives for the duration of the second scope.
 //!     MAIN.insert("x", 123);
 //!
 //!     // Further calls that use "x"
@@ -59,7 +63,8 @@
 //! # Lifting #
 //!
 //! Lifting a key inside a scope means to defer all its [core operations] to the
-//! parent scope, if any such parent exists.
+//! parent scope, if any such parent exists. Otherwise the current scope is
+//! used.
 //!
 //! ```
 //! bypass::scope!(static MAIN);
@@ -135,8 +140,8 @@
 //! where we are not interested in returning it through every stack frame
 //! manually.
 //!
-//! As such, this library explicitly does not provide methods like `contains`, and panics as soon
-//! as something is not as expected.
+//! As such, this library explicitly does not provide methods like `contains`,
+//! and panics as soon as something is not as expected.
 //!
 //! # Logging #
 //!
@@ -347,10 +352,10 @@ impl Store {
             if let Some((parent, rest)) = parents.split() {
                 parent.get(lift.0.clone(), location, rest, logger)
             } else {
-                self.get_inner(lift.0.clone(), location, logger)
+                self.get_inner(lift.0.clone(), location, parents, logger)
             }
         } else {
-            self.get_inner(key, location, logger)
+            self.get_inner(key, location, parents, logger)
         }
     }
 
@@ -358,12 +363,18 @@ impl Store {
         &self,
         key: CowStr,
         location: Location,
+        parents: ScopeArray,
         logger: &dyn Fn(Log),
     ) -> V {
         let this = self.items.borrow();
-        let item: &Item = this
-            .get(&key)
-            .unwrap_or_else(|| panic!("bypass: key not present: {:?}", key));
+
+        let Some(item): Option<&Item> = this.get(&key) else {
+            if let Some((parent, rest)) = parents.split() {
+                return parent.get(key, location, rest, logger);
+            } else {
+                panic!("bypass: key not present: {:?}", key)
+            }
+        };
 
         let result = (*item.item)
             .downcast_ref::<V>()
@@ -392,18 +403,29 @@ impl Store {
             if let Some((parent, rest)) = parents.split() {
                 parent.remove(lift.0.clone(), location, rest, logger)
             } else {
-                self.remove_inner(lift.0.clone(), location, logger)
+                self.remove_inner(lift.0.clone(), location, parents, logger)
             }
         } else {
-            self.remove_inner(key, location, logger)
+            self.remove_inner(key, location, parents, logger)
         }
     }
 
-    fn remove_inner<V: Any>(&self, key: CowStr, location: Location, logger: &dyn Fn(Log)) -> V {
+    fn remove_inner<V: Any>(
+        &self,
+        key: CowStr,
+        location: Location,
+        parents: ScopeArray,
+        logger: &dyn Fn(Log),
+    ) -> V {
         let mut this = self.items.borrow_mut();
-        let item: Item = this
-            .remove(&key)
-            .unwrap_or_else(|| panic!("bypass: key not present: {:?}", key));
+
+        let Some(item): Option<Item> = this.remove(&key) else {
+            if let Some((parent, rest)) = parents.split() {
+                return parent.remove(key, location, rest, logger);
+            } else {
+                panic!("bypass: key not present: {:?}", key)
+            }
+        };
 
         let log = Log {
             operation: Operation::Remove,
@@ -477,8 +499,8 @@ impl Scope {
     /// Creates a subscope that captures [core
     /// operations](crate#core-operations) for the duration of `work`.
     ///
-    /// A subscope is an empty, isolated scope. It can refer to its parent using
-    /// [lift](Scope::lift).
+    /// A subscope captures [insert](Scope::insert)s. It can insert into its
+    /// parent using [lift](Scope::lift).
     ///
     /// # Examples #
     ///
@@ -548,7 +570,7 @@ impl Scope {
     ///
     /// # Panics #
     ///
-    /// Panics if a lift of the same key already exists.
+    /// Panics if a lift of the same key already exists in the current scope.
     ///
     /// # Examples #
     ///
@@ -556,12 +578,13 @@ impl Scope {
     /// bypass::scope!(static X);
     ///
     /// X.scope(|| {
-    ///     X.insert("x", 123);
     ///     X.scope(|| {
     ///         X.lift("x");
-    ///         let value: i32 = X.get("x");
-    ///         println!("{}", value);
+    ///         X.insert("x", 123);
     ///     });
+    ///
+    ///     let value: i32 = X.get("x");
+    ///     println!("{}", value);
     /// });
     /// ```
     #[track_caller]

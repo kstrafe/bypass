@@ -207,3 +207,57 @@ fn panic_across_scope() {
         assert_eq!(value, 1);
     });
 }
+
+#[test]
+fn get_accesses_parent_scope() {
+    X.scope(|| {
+        X.insert("x", 123);
+        X.scope(|| {
+            X.scope(|| {
+                let value: i32 = X.get("x");
+                assert_eq!(value, 123);
+            });
+        });
+    });
+}
+
+#[test]
+fn get_accesses_parent_scope_through_lift() {
+    X.scope(|| {
+        X.insert("y", 123);
+        X.scope(|| {
+            X.lift("x").to("y");
+            X.scope(|| {
+                let value: i32 = X.get("x");
+                assert_eq!(value, 123);
+            });
+        });
+    });
+}
+
+#[test]
+fn remove_accesses_parent_scope() {
+    X.scope(|| {
+        X.insert("x", 123);
+        X.scope(|| {
+            X.scope(|| {
+                let value: i32 = X.remove("x");
+                assert_eq!(value, 123);
+            });
+        });
+    });
+}
+
+#[test]
+fn remove_accesses_parent_scope_through_lift() {
+    X.scope(|| {
+        X.insert("y", 123);
+        X.scope(|| {
+            X.lift("x").to("y");
+            X.scope(|| {
+                let value: i32 = X.remove("x");
+                assert_eq!(value, 123);
+            });
+        });
+    });
+}
