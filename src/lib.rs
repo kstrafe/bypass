@@ -25,20 +25,19 @@
 //! }
 //! ```
 //!
-//! This also allows us to pass from `some_function` to the caller by calling
-//! [insert](Scope::insert) inside `some_function` followed by calling
+//! This also allows us to pass data from `some_function` to the caller by
+//! calling [insert](Scope::insert) inside `some_function` followed by calling
 //! [get](Scope::get) or [remove](Scope::remove) after the function call
 //! completes.
 //!
 //! # Scoping #
 //!
-//! If we want to call a function that `inserts` some key-value pair multiple
-//! times, then the second insert will panic because the key already exists due
-//! to the first call. For this purpose we can create a new sub-scope using
-//! [scope](crate::Scope). Such a "sub-scope" captures [insert](Scope::insert)s
-//! unless a [lift](Scope::lift)ed. Functions [get](Scope::get) and
-//! [remove](Scope::remove) will look for a matching key from the current scope
-//! towards the root scope.
+//! A scope constrains the extent of [insert](Scope::insert)s.
+//!
+//! The following example shows its usage. If we did not have the
+//! inner scope surrounding the `function` call, then this code would panic on
+//! the second iteration of the for loop
+//! because it would cause a duplicate key to exist.
 //!
 //! ```
 //! bypass::scope!(static MAIN);
@@ -60,30 +59,16 @@
 //! }
 //! ```
 //!
+//! Inside a scope, performing [get](Scope::get), [modify](Scope::modify), or
+//! [remove](Scope::remove) will first search the current scope for a matching
+//! key. If not found, search the parent. If not found, search the parent's
+//! parent, and so on.
+//!
 //! # Lifting #
 //!
 //! Lifting a key inside a scope means to defer all its [core operations] to the
 //! parent scope, if any such parent exists. Otherwise the current scope is
 //! used.
-//!
-//! ```
-//! bypass::scope!(static MAIN);
-//!
-//! MAIN.scope(|| {
-//!     MAIN.insert("x", 123);
-//!
-//!     MAIN.scope(|| {
-//!         MAIN.lift("x");
-//!         let value: i32 = MAIN.get("x");
-//!         println!("x={}", value);
-//!     });
-//! });
-//! ```
-//!
-//! Without lifting `"x"` the innermost scope would not be able to access the
-//! insert that was performed in the outer scope.
-//!
-//! Similarly, lifts also apply to not-yet-inserted items.
 //!
 //! ```
 //! bypass::scope!(static MAIN);
@@ -99,12 +84,15 @@
 //! });
 //! ```
 //!
-//! The above would panic on `get` if the lift were to be removed.
+//! The above would panic on `get` if the lift were to be removed, since the
+//! innermost scope would capture the insert which the outermost scope can't
+//! access.
 //!
 //! ## Translations ##
 //!
 //! Lifts allow you to translate a key. This can be useful when two pieces of
-//! code attempt to insert the same key, so you wrap one piece of code in a
+//! code need to share some data but internally use different keys,
+//! so you wrap one piece of code in a
 //! scope that lifts that key into another key.
 //!
 //! ```
@@ -551,11 +539,8 @@ pub struct Scope {
 }
 
 impl Scope {
-    /// Creates a subscope that captures [core
-    /// operations](crate#core-operations) for the duration of `work`.
-    ///
-    /// A subscope captures [insert](Scope::insert)s. It can insert into its
-    /// parent using [lift](Scope::lift).
+    /// A scope constrains the extent of [insert](Scope::insert)s. It can insert
+    /// into its parent using [lift](Scope::lift).
     ///
     /// # Examples #
     ///
@@ -619,8 +604,8 @@ impl Scope {
 
     /// Lifts a given key to the parent scope.
     ///
-    /// [Core operations](crate#core-operations) that are performed after a
-    /// `lift` with the same key will perform their operations in the parent
+    /// [Core operations](crate#core-operations) whose keys match a
+    /// `lift` will perform their operations in the parent
     /// scope. If no parent scope exists then the current scope is used.
     ///
     /// # Panics #
