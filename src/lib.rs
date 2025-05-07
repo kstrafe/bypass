@@ -367,11 +367,6 @@ impl Store {
             }
         };
 
-        let result = (*item.item)
-            .downcast_ref::<V>()
-            .expect("bypass: type not as expected")
-            .clone();
-
         let log = Log {
             operation: Operation::Get,
             source: item.location,
@@ -380,7 +375,10 @@ impl Store {
         };
         logger(log);
 
-        result
+        (*item.item)
+            .downcast_ref::<V>()
+            .expect("bypass: type not as expected")
+            .clone()
     }
 
     fn modify<V: Any, F: FnOnce(&mut V) -> R, R>(
@@ -420,10 +418,6 @@ impl Store {
             }
         };
 
-        let value = (*item.item)
-            .downcast_mut::<V>()
-            .expect("bypass: type not as expected");
-
         let log = Log {
             operation: Operation::Modify,
             source: item.location,
@@ -431,6 +425,10 @@ impl Store {
             key: &key,
         };
         logger(log);
+
+        let value = (*item.item)
+            .downcast_mut::<V>()
+            .expect("bypass: type not as expected");
 
         modifier(value)
     }
