@@ -177,7 +177,6 @@ use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap},
     fmt, panic,
-    rc::Rc,
 };
 
 /// Creates a scope.
@@ -672,6 +671,31 @@ impl Scope {
         })
     }
 
+    /// Inserts an entry into the scope and returns a clone.
+    ///
+    /// Convenience function that prevents the need for manually cloning.
+    ///
+    /// # Panics #
+    ///
+    /// Panics if the key already exists.
+    ///
+    /// # Example #
+    ///
+    /// ```
+    /// bypass::scope!(static X);
+    ///
+    /// X.scope(|| {
+    ///     let number = X.insert_clone("abc", 123);
+    ///     assert_eq!(number, 123);
+    /// });
+    /// ```
+    #[track_caller]
+    pub fn insert_clone<K: Into<CowStr>, V: Any + Clone>(&self, key: K, value: V) -> V {
+        let clone = value.clone();
+        self.insert(key, clone);
+        value
+    }
+
     /// Gets a clone of an entry from the scope.
     ///
     /// # Panics #
@@ -795,129 +819,5 @@ impl ScopeInner {
                 eprintln!("{}", log);
             }),
         }
-    }
-}
-
-/// A builder for constructing cyclic data structures within a [Scope].
-///
-/// The [Cyclic] struct provides an interface for creating sets of
-/// objects with cyclic (self-referential or mutually referential)
-/// relationships. It automates the creation and storage of [Rc] and
-/// [Weak](std::rc::Weak) pointers in the given scope, enabling the
-/// construction of graphs, trees with back-references, or other cyclic
-/// structures.
-///
-/// # How It Works #
-///
-/// - Each call to [then](Cyclic::then) registers a constructor closure
-///   associated with a unique name.
-/// - When [construct](Cyclic::construct) is called:
-///   - All registered names are first populated in the scope as `{name}/weak`
-///     keys, each holding a `Weak<R>` reference to the eventual value.
-///   - Then, each closure is executed in order, allowing each to access the
-///     previously registered strong and weak references via the scope.
-///   - The resulting value of each closure is stored under its name as a strong
-///     [Rc] reference.
-///
-/// This allows closures to refer to both earlier and later entries. Later
-/// entries can only be weakly referenced. Earlier entries can be strongly
-/// referenced.
-///
-/// # Examples #
-///
-/// ```
-/// use bypass::{scope, Cyclic};
-/// use std::rc::{Rc, Weak};
-///
-/// scope!(static MAIN);
-///
-/// MAIN.scope(|| {
-///     Cyclic::new(&MAIN, |_| {})
-///         .then("first", || {
-///             // Access a weak reference to a subsequent `then` entry.
-///             let weak_second: Weak<String> = MAIN.get("second/weak");
-///             println!("first: Strong count of 'second': {}", Weak::strong_count(&weak_second));
-///
-///             123i32
-///         })
-///         .then("second", || {
-///             // Access a strong reference to a previous `then` entry.
-///             let strong_first: Rc<i32> = MAIN.get("first");
-///             println!("second: Value of 'first': {}", *strong_first);
-///             String::from("lorem ipsum")
-///         })
-///         .construct();
-/// });
-/// ```
-pub struct Cyclic<F: FnOnce(&'static Scope)> {
-    scope: &'static Scope,
-    function: F,
-}
-
-impl<X: FnOnce(&'static Scope)> Cyclic<X> {
-    /// Creates a new cyclic builder with an initializer.
-    ///
-    /// Function `initializer` will be run before all [then](Cyclic::then)
-    /// clauses, but after all weak pointers have been added to the scope.
-    ///
-    /// # Examples #
-    ///
-    /// ```
-    /// use bypass::{scope, Cyclic};
-    /// use std::rc::{Rc, Weak};
-    ///
-    /// scope!(static MAIN);
-    ///
-    /// MAIN.scope(|| {
-    ///     Cyclic::new(&MAIN, |scope| {
-    ///         scope.insert("x", 123);
-    ///         // We can get a weak pointer to subsequent `then`s.
-    ///         let y: Weak<usize> = scope.get("y/weak");
-    ///     })
-    ///     .then("y", || {
-    ///         let value: i32 = MAIN.get("x");
-    ///         assert_eq!(value, 123);
-    ///
-    ///         9usize
-    ///     })
-    ///     .construct();
-    /// });
-    /// ```
-    pub fn new(scope: &'static Scope, initializer: X) -> Self {
-        Self {
-            scope,
-            function: initializer,
-        }
-    }
-}
-
-impl<F: FnOnce(&'static Scope)> Cyclic<F> {
-    /// Adds a cyclic dependency.
-    pub fn then<N: Into<CowStr>, G: FnOnce() -> R, R: 'static>(
-        self,
-        name: N,
-        g: G,
-    ) -> Cyclic<impl FnOnce(&'static Scope)> {
-        let scope = self.scope;
-        let function = self.function;
-        let name = name.into();
-
-        Cyclic {
-            scope,
-            function: move |scope| {
-                let name_clone = name.clone();
-                let strong = Rc::new_cyclic(|weak| {
-                    scope.insert(format!("{}/weak", name_clone), weak.clone());
-                    function(scope);
-                    g()
-                });
-                scope.insert(name, strong);
-            },
-        }
-    }
-
-    /// Constructs the set of cyclic dependencies.
-    pub fn construct(self) {
-        (self.function)(self.scope);
     }
 }
