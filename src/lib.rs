@@ -172,7 +172,7 @@
     unused_qualifications
 )]
 use std::{
-    any::Any,
+    any::{Any, type_name},
     borrow::Cow,
     cell::RefCell,
     collections::{BTreeMap, HashMap},
@@ -203,6 +203,7 @@ type CowStr = Cow<'static, str>;
 struct Item {
     item: Box<dyn Any>,
     location: Location,
+    type_name: &'static str,
 }
 
 struct ScopeArray<'a>(&'a [Store]);
@@ -326,6 +327,7 @@ impl Store {
                     Item {
                         item: Box::new(value),
                         location,
+                        type_name: type_name::<V>(),
                     }
                 )
                 .is_none()
@@ -482,6 +484,26 @@ impl Store {
             .unwrap_or_else(|_| panic!("bypass: type not as expected"));
 
         *result
+    }
+}
+
+impl fmt::Debug for Store {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (lift_from, lift_to) in self.lifts.borrow().iter() {
+            writeln!(
+                f,
+                "Lift: {:?} -> {:?} [{}]",
+                lift_from, lift_to.0, lift_to.1
+            )?;
+        }
+        for (key, item) in self.items.borrow().iter() {
+            writeln!(
+                f,
+                "Entry: {:?}: {} [{}]",
+                key, item.type_name, item.location
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -804,6 +826,12 @@ impl Scope {
     }
 }
 
+impl fmt::Debug for Scope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.inner.with_borrow(|x| x.fmt(f))
+    }
+}
+
 #[doc(hidden)]
 pub struct ScopeInner {
     scopes: Vec<Store>,
@@ -819,5 +847,15 @@ impl ScopeInner {
                 eprintln!("{}", log);
             }),
         }
+    }
+}
+
+impl fmt::Debug for ScopeInner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (idx, scope) in self.scopes.iter().enumerate() {
+            writeln!(f, "===== Scope {} =====", idx)?;
+            scope.fmt(f)?;
+        }
+        Ok(())
     }
 }
